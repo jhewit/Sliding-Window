@@ -1,6 +1,10 @@
 //------------------------------udphw3case4.cpp-------------------------------
 //Author: Johnathan Hewit
-//Description:
+//Description: UWB Homework Assignment 3: A set of programs for creating a UDP
+//             protocol and testing various methods and protocols of data
+//             transfer from client to server. This particular program uses a
+//             specific test case for comparing two different sliding windows
+//             by applying a drop rate for each packet between 0 - 10%.
 //----------------------------------------------------------------------------
 
 #include <stdio.h>
@@ -13,23 +17,29 @@
 using namespace std;
 
 //------------------------------clientStopWait-------------------------------
-//Description:
+//Description: Function that receives a socket descriptor, a maximum size for
+//             messages and the array for the messages. This function is a
+//             client that writes its sequence number in a message to the server, 
+//             serverReliable, and waits for a response up until a timeout is
+//             reached, then it resends the message if the server has not responded. 
+//             It returns a count of dropped packets based on a count of 
+//             retransmissions.
 //---------------------------------------------------------------------------
 int clientStopWait(UdpSocket &sock, const int max, int message[])
 {
+    cerr << "Beginning client stop and wait transmissions..." << endl;
     Timer timer;
     int count = 0;
     for (int i = 0; i < max; i++)
     {
         timer.start();
         message[0] = i;
-        sock.sendTo((char *)message, sizeof(&message));
-        while (sock.pollRecvFrom() < 1)
+        sock.sendTo((char *)message, sizeof(&message)); // Transmit message to server
+        while (sock.pollRecvFrom() < 1) // Wait for incoming message
         {
             usleep(1);
-            if (timer.lap() >= 1500)
+            if (timer.lap() >= 1500) // If timer goes off, resend and count occurrence
             {
-                cerr << "Error occurred. Retransmitting..." << endl;
                 count++;
                 break;
             }
@@ -39,160 +49,179 @@ int clientStopWait(UdpSocket &sock, const int max, int message[])
             i--;
             continue;
         }
-        sock.recvFrom((char *)message, sizeof(&message));
-
-        cout << "Time: " << timer.lap() << endl;
-    }
+        sock.recvFrom((char *)message, sizeof(&message)); // Otherwise, the message arrives,
+    }                                                     // receive it and go to the next
     return count;
 } // end of clientStopWait
 
 //------------------------------serverReliable-------------------------------
-//Description:
+//Description: Function that receives a socket descriptor, a maximum size for
+//             messages and the array for the messages. This function is a
+//             server that receives transmissions from the clientStopWait
+//             function and returns an ACK or acknowledgement as a response
+//             if the sequence number is what it's expecting. Otherwise, it
+//             allows the client to timeout.
 //---------------------------------------------------------------------------
 int serverReliable(UdpSocket &sock, const int max, int message[])
 {
-    cout << "Beginning the transmissions..." << endl;
+    cerr << "Beginning receiving transmissions..." << endl;
     for (int i = 0; i < max; i++)
     {
-        if (message[0] == (max - 1))
+        if (message[0] == (max - 1)) // Check if we are at the last sequence number
         {
             break;
         }
-        sock.recvFrom((char *)message, sizeof(&message));
+        sock.recvFrom((char *)message, sizeof(&message)); // Receive incoming message
         if (message[0] == i)
         {
-            cout << "Send ACK for message: " << message[0] << endl;
-            sock.ackTo((char *)message, sizeof(&message));
+            sock.ackTo((char *)message, sizeof(&message)); // Send ACK to client
         }
         else
         {
-            while (sock.pollRecvFrom() < 1)
-            {
+            while (sock.pollRecvFrom() < 1) // If not expected message, wait for another
+            {                               // and roll back
                 usleep(1);
             }
             i--;
-            cout << "Go back..." << endl;
         }
     }
     return message[0];
 } // end of serverReliable
 
 //----------------------------clientSlidingWindow----------------------------
-//Description:
+//Description: Function that receives a socket descriptor, a maximum size for
+//             messages in a frame, the array for the messages, and a window 
+//             size for determining the number of frames in the sliding window.
+//             The function is a client that fills the messages in each frame
+//             of a window with sequence numbers and sends those to the
+//             serverEarlyRetrans server. It then awaits a response in the form
+//             of ACKs or acknowledgments and continues to the next sequence
+//             numbers in the following window. If a timeout occurs, it
+//             retransmits all messages up until the last ACK it received from
+//             the server. It returns the number of dropped packets based on
+//             a count of retransmissions.
 //---------------------------------------------------------------------------
 int clientSlidingWindow(UdpSocket &sock, const int max, int message[], int windowSize)
 {
-    cout << "Starting Sliding Window..." << endl;
+    cerr << "Beginning Sliding Window..." << endl;
     int count = 0;
-    int i = 0;
+    int seqNo = 0;
     int unAck = 0;
     Timer timer;
-    int lastAckFrame = 0;
-    while (i < max)
+    int lastSeqRec = 0;
+    int lastAckRec = -1;
+    while (seqNo < max)
     {
         while (unAck < windowSize)
         {
-            message[0] = i;
-            sock.sendTo((char *)message, sizeof(&message));
-            i++;
+            if (seqNo == max) // We've reached the end and need to stop sending packets
+            {
+                break;
+            }
+            message[0] = seqNo;
+            sock.sendTo((char *)message, sizeof(&message)); // Send the message
+            seqNo++;
             unAck++;
         }
 
-        if (sock.pollRecvFrom() > 0)
+        timer.start();
+        while (timer.lap() < 1500)
         {
-            sock.recvFrom((char *)message, sizeof(&message));
-            unAck--;
-        }
-        else
-        {
+            if (sock.pollRecvFrom() > 0) // Check if receiving a response
             {
-                timer.start();
-                while (sock.pollRecvFrom() < 1)
+                sock.recvFrom((char *)message, sizeof(&message)); // Record response
+                lastSeqRec = message[0];
+
+                if (lastSeqRec == (seqNo - 1)) // Received all packets in window
                 {
-                    usleep(1);
-                    if (timer.lap() >= 1500)
-                    {
-                        cout << "Timeout occurred. Retransmitting..." << endl;
-                        count ++;
-                        break;
-                    }
+                    unAck -= windowSize;        // Reset unAck tracker back to 0
+                    lastAckRec = lastSeqRec;
+                    break;
                 }
-                if (timer.lap() >= 1500)
+                else // Some packets were lost, retransmit
                 {
-                    i--;
-                    continue;
+                    unAck -= ((seqNo - 1) - lastSeqRec);
+                    seqNo = lastSeqRec + 1;
+                    lastAckRec = lastSeqRec;
+                    count++;
+                    break;
                 }
             }
-        }   
+        }
+        if (timer.lap() >= 1500) // Handle timeout scenario
+        {
+            count++;
+            unAck -= ((seqNo - 1)  - lastSeqRec);
+            seqNo = lastSeqRec + 1;
+            continue;
+        } 
     }
     return count;
 } // end of clientSlidingWindow
 
 //------------------------------serverEarlyRetrans-----------------------------
-//Description:
+//Description: Function that receives a socket descriptor, a maximum size for
+//             messages in a frame, the array for the messages, and a window 
+//             size for determining the number of frames in the sliding window.
+//             The function is a server that waits for incoming messages, reads
+//             the sequence number contained within it,  places it within a 
+//             window, and returns a cumulative ACK to the client, 
+//             clientSlidingWindow, if it receives the next expected and
+//             in-order sequence number and the window is full. If it does not,
+//             the server allows the client to time out forcing a resubmission
+//             of the same message. In this version for test case 4, this
+//             function includes a 0 - 10% chance of dropping a given packet
+//             as it's received, forcing a timeout and retransmission by the client.
 //---------------------------------------------------------------------------
 void serverEarlyRetrans(UdpSocket &sock, const int max, int message[], int windowSize)
 {
     cerr << "Beginning server early retransmission..." << endl;
-    int lastFrameRec = 0;
-    int lastSeqRec = -1;
-    int lastAckFrame = 0;
+    int currentFrame =  0;
+    int currentSeqNo =  0;
+    int lastFrameRec =  0;
+    int lastSeqRec =   -1;
     int window[windowSize];
     int randomNum;
     srand (time(NULL));
-    for (int i = 0; i < windowSize; i++)
+    for (int i = 0; i < windowSize; i++) // Initialize the sliding window
     {
         window[i] = -1;
     }
-    while (lastFrameRec < max)
+    while (currentSeqNo < max)
     {
-        while (sock.pollRecvFrom() < 1)
+        while (sock.pollRecvFrom() < 1) // Wait until a message comes in from the client
         {
             usleep(1);
         }
-        sock.recvFrom((char *)message, MSGSIZE);
-        lastFrameRec = message[0];
+        sock.recvFrom((char *)message, sizeof(&message));
+        lastSeqRec = message[0];
+        lastFrameRec = currentSeqNo - 1;
 
-        int index = lastFrameRec % windowSize;
         randomNum = rand() % 101;
-        if (randomNum <= 10)
+        if (randomNum <= 10) // Randomly dropping packets 0-10% of the time
         {
-            sock.ackTo((char *)&lastSeqRec, sizeof(int));
-            cerr << "Dropping packet, requesting retransmission..." << endl;
             continue;
         }
 
-        if (index < lastAckFrame || index >= windowSize)
+        if (currentSeqNo == lastSeqRec)
         {
-            sock.ackTo((char *)&lastSeqRec, sizeof(int));
-            cerr << "Outside of window size:" << endl;
-            continue;
-        }
-        else if (index == lastAckFrame)
-        {
-            window[index] = lastFrameRec;
-            lastSeqRec = lastFrameRec;
-
-            while (window[lastAckFrame] > -1)
+            window[currentFrame] = lastSeqRec;
+            if (currentFrame == (windowSize - 1) || lastSeqRec == (max - 1)) // Last frame in window or last sequence in
+            {                                                                // data packets, send cumulative ACK
+                sock.ackTo((char *)&lastSeqRec, sizeof(int));
+                currentSeqNo++;
+                currentFrame = 0;
+                continue;
+            }
+            else // Still more messages in the current window yet to be received
             {
-                lastSeqRec = window[lastAckFrame];
-                window[lastAckFrame] = -1;
-                lastAckFrame++;
-                lastAckFrame %= windowSize;
-                if (window[lastAckFrame] == -1)
-                {
-                    sock.ackTo((char *)&lastSeqRec, sizeof(int));
-                }
+                currentFrame++;
+                currentSeqNo++;
             }
         }
-        else
+        else // Received sequence number is out of order, do not send an ACK to force a timeout and retransmission
         {
-            window[index] = lastFrameRec;
-            sock.ackTo((char *)&lastSeqRec, sizeof(int));
-        }
-        if (lastFrameRec == (max - 1))
-        {
-            break;
+            continue;
         }
     }
 } // end of serverEarlyRetrans
